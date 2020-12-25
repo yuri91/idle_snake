@@ -4,7 +4,7 @@ use std::time::Duration;
 const ARENA_WIDTH: u32 = 10;
 const ARENA_HEIGHT: u32 = 10;
 
-#[derive(Default, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Hash)]
 struct Position {
     x: i32,
     y: i32,
@@ -24,9 +24,28 @@ impl Size {
     }
 }
 
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum Direction {
+    Left,
+    Up,
+    Right,
+    Down,
+}
+impl Direction {
+    fn opposite(self) -> Self {
+        match self {
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
+            Self::Up => Self::Down,
+            Self::Down => Self::Up,
+        }
+    }
+}
+
 struct Snake;
 struct SnakeSegment {
-    prev: Option<Entity>,
+    front: Option<Entity>,
+    back: Option<Entity>,
 }
 
 struct Materials {
@@ -37,6 +56,7 @@ struct Materials {
 
 struct Player {
     snake: Entity,
+    direction: Direction,
 }
 
 struct TurnTimer(Timer);
@@ -67,11 +87,15 @@ fn setup(commands: &mut Commands, mut materials: ResMut<Assets<ColorMaterial>>) 
 }
 
 fn game_setup(commands: &mut Commands, materials: Res<Materials>) {
-    spawn_head(
+    let snake = spawn_snake(
         commands,
         materials.head_material.clone(),
-        Vec2::new(10.0, 10.0),
+        Position { x: 0, y: 0 },
     );
+    commands.insert_resource(Player {
+        snake,
+        direction: Direction::Up,
+    });
 }
 
 fn size_scaling(windows: Res<Windows>, mut q: Query<(&Size, &mut Sprite)>) {
@@ -102,24 +126,63 @@ fn position_translation(windows: Res<Windows>, mut q: Query<(&Position, &mut Tra
 fn snake_movement(
     timer: Res<TurnTimer>,
     keys: Res<Input<KeyCode>>,
-    player: Res<Player>,
+    mut player: ResMut<Player>,
     mut head_positions: Query<&mut Position, With<SnakeSegment>>,
 ) {
+    let dir = if keys.pressed(KeyCode::Left) {
+        Direction::Left
+    } else if keys.pressed(KeyCode::Right) {
+        Direction::Right
+    } else if keys.pressed(KeyCode::Down) {
+        Direction::Down
+    } else if keys.pressed(KeyCode::Up) {
+        Direction::Up
+    } else {
+        player.direction
+    };
+
+    if dir != player.direction.opposite() {
+        player.direction = dir;
+    }
+
     if !timer.0.finished() {
         return;
     }
+
     let mut player_head_pos = head_positions.get_mut(player.snake).unwrap();
-    if keys.pressed(KeyCode::Left) {
-        player_head_pos.x -= 1;
+    match player.direction {
+        Direction::Left => {
+            player_head_pos.x -= 1;
+        }
+        Direction::Right => {
+            player_head_pos.x += 1;
+        }
+        Direction::Down => {
+            player_head_pos.y -= 1;
+        }
+        Direction::Up => {
+            player_head_pos.y += 1;
+        }
     }
-    if keys.pressed(KeyCode::Right) {
-        player_head_pos.x += 1;
+}
+
+fn segment_movement(timer: Res<TurnTimer>, mut q: Query<(&mut Position, &SnakeSegment)>) {
+    if !timer.0.finished() {
+        return;
     }
-    if keys.pressed(KeyCode::Down) {
-        player_head_pos.y -= 1;
-    }
-    if keys.pressed(KeyCode::Up) {
-        player_head_pos.y += 1;
+
+    let heads: Vec<_> = q
+        .iter_mut()
+        .filter(|(_, s)| s.front.is_none())
+        .map(|(p, s)| (s.back, p.clone()))
+        .collect();
+    for (mut e, mut p) in heads {
+        while let Some(es) = e {
+            let oldp = *q.get_component::<Position>(es).unwrap();
+            q.set::<Position>(es, p).unwrap();
+            p = oldp;
+            e = q.get_component::<SnakeSegment>(es).unwrap().back;
+        }
     }
 }
 
@@ -127,30 +190,65 @@ fn turn_timer(time: Res<Time>, mut timer: ResMut<TurnTimer>) {
     timer.0.tick(time.delta_seconds());
 }
 
-fn spawn_head(commands: &mut Commands, material: Handle<ColorMaterial>, position: Vec2) {
-    let snake = commands
-        .spawn(SpriteBundle {
-            material,
-            sprite: Sprite::new(position),
-            ..Default::default()
-        })
-        .with(Position { x: 3, y: 3 })
-        .with(Size::square(0.8))
-        .with(Snake)
-        .with(SnakeSegment { prev: None })
-        .current_entity()
-        .unwrap();
-    commands.insert_resource(Player { snake });
-}
-
-fn spawn_segment(commands: &mut Commands, material: Handle<ColorMaterial>, position: Vec2) {
+fn spawn_head(
+    commands: &mut Commands,
+    material: Handle<ColorMaterial>,
+    position: Position,
+) -> Entity {
     commands
         .spawn(SpriteBundle {
             material,
-            sprite: Sprite::new(position),
+            sprite: Sprite::new(Vec2::new(0., 0.)),
             ..Default::default()
         })
-        .with(Snake);
+        .with(position)
+        .with(Size::square(0.8))
+        .with(Snake)
+        .current_entity()
+        .unwrap()
+}
+
+fn spawn_segment(
+    commands: &mut Commands,
+    material: Handle<ColorMaterial>,
+    position: Position,
+) -> Entity {
+    commands
+        .spawn(SpriteBundle {
+            material,
+            sprite: Sprite::new(Vec2::new(0., 0.)),
+            ..Default::default()
+        })
+        .with(position)
+        .with(Size::square(0.65))
+        .with(Snake)
+        .current_entity()
+        .unwrap()
+}
+
+fn spawn_snake(
+    commands: &mut Commands,
+    material: Handle<ColorMaterial>,
+    position: Position,
+) -> Entity {
+    let snake = spawn_head(commands, material.clone(), position);
+
+    let mut pos = position;
+    let mut segments = vec![None, Some(snake)];
+    for _ in 0..3 {
+        pos.x += 1;
+        segments.push(Some(spawn_segment(commands, material.clone(), pos)));
+    }
+    segments.push(None);
+    for w in segments.windows(3) {
+        let seg = w[1].unwrap();
+        commands.set_current_entity(seg);
+        commands.with(SnakeSegment {
+            front: w[0],
+            back: w[2],
+        });
+    }
+    snake
 }
 
 fn main() {
@@ -162,6 +260,7 @@ fn main() {
             SystemStage::serial().with_system(game_setup.system()),
         )
         .add_system(turn_timer.system())
+        .add_system(segment_movement.system())
         .add_system(snake_movement.system())
         .add_system(position_translation.system())
         .add_system(size_scaling.system())
