@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use rand::random;
 use std::time::Duration;
 
 const ARENA_WIDTH: u32 = 10;
@@ -43,6 +44,7 @@ impl Direction {
 }
 
 struct Snake;
+struct SnakeHead;
 struct SnakeSegment {
     front: Option<Entity>,
     back: Option<Entity>,
@@ -60,6 +62,20 @@ struct Player {
 }
 
 struct TurnTimer(Timer);
+
+struct Food;
+
+struct FoodSpawnTimer(Timer);
+impl Default for FoodSpawnTimer {
+    fn default() -> Self {
+        Self(Timer::new(Duration::from_millis(1000), true))
+    }
+}
+
+struct EatEvent {
+    eater: Entity,
+    eaten: Entity,
+}
 
 fn setup(commands: &mut Commands, mut materials: ResMut<Assets<ColorMaterial>>) {
     commands.spawn(Camera2dBundle::default());
@@ -87,11 +103,7 @@ fn setup(commands: &mut Commands, mut materials: ResMut<Assets<ColorMaterial>>) 
 }
 
 fn game_setup(commands: &mut Commands, materials: Res<Materials>) {
-    let snake = spawn_snake(
-        commands,
-        materials.head_material.clone(),
-        Position { x: 0, y: 0 },
-    );
+    let snake = spawn_snake(commands, &materials, Position { x: 0, y: 0 });
     commands.insert_resource(Player {
         snake,
         direction: Direction::Up,
@@ -127,7 +139,7 @@ fn snake_movement(
     timer: Res<TurnTimer>,
     keys: Res<Input<KeyCode>>,
     mut player: ResMut<Player>,
-    mut head_positions: Query<&mut Position, With<SnakeSegment>>,
+    mut head_positions: Query<&mut Position, With<SnakeHead>>,
 ) {
     let dir = if keys.pressed(KeyCode::Left) {
         Direction::Left
@@ -198,12 +210,12 @@ fn spawn_head(
     commands
         .spawn(SpriteBundle {
             material,
-            sprite: Sprite::new(Vec2::new(0., 0.)),
             ..Default::default()
         })
         .with(position)
         .with(Size::square(0.8))
         .with(Snake)
+        .with(SnakeHead)
         .current_entity()
         .unwrap()
 }
@@ -216,7 +228,6 @@ fn spawn_segment(
     commands
         .spawn(SpriteBundle {
             material,
-            sprite: Sprite::new(Vec2::new(0., 0.)),
             ..Default::default()
         })
         .with(position)
@@ -226,18 +237,18 @@ fn spawn_segment(
         .unwrap()
 }
 
-fn spawn_snake(
-    commands: &mut Commands,
-    material: Handle<ColorMaterial>,
-    position: Position,
-) -> Entity {
-    let snake = spawn_head(commands, material.clone(), position);
+fn spawn_snake(commands: &mut Commands, materials: &Materials, position: Position) -> Entity {
+    let snake = spawn_head(commands, materials.head_material.clone(), position);
 
     let mut pos = position;
     let mut segments = vec![None, Some(snake)];
     for _ in 0..3 {
         pos.x += 1;
-        segments.push(Some(spawn_segment(commands, material.clone(), pos)));
+        segments.push(Some(spawn_segment(
+            commands,
+            materials.body_material.clone(),
+            pos,
+        )));
     }
     segments.push(None);
     for w in segments.windows(3) {
@@ -251,17 +262,111 @@ fn spawn_snake(
     snake
 }
 
+fn spawn_food(commands: &mut Commands, material: Handle<ColorMaterial>, position: Position) {
+    commands
+        .spawn(SpriteBundle {
+            material,
+            ..Default::default()
+        })
+        .with(Food)
+        .with(position)
+        .with(Size::square(0.4));
+}
+
+fn food_spawner(
+    commands: &mut Commands,
+    materials: Res<Materials>,
+    time: Res<Time>,
+    mut timer: Local<FoodSpawnTimer>,
+) {
+    timer.0.tick(time.delta_seconds());
+    if !timer.0.finished() {
+        return;
+    }
+    let pos = Position {
+        x: (random::<f32>() * ARENA_WIDTH as f32) as i32,
+        y: (random::<f32>() * ARENA_HEIGHT as f32) as i32,
+    };
+    spawn_food(commands, materials.food_material.clone(), pos);
+}
+
+fn collision_solver(
+    timer: Res<TurnTimer>,
+    heads_positions: Query<(Entity, &Position), With<SnakeHead>>,
+    food_positions: Query<(Entity, &Position), With<Food>>,
+    mut eat_events: ResMut<Events<EatEvent>>,
+) {
+    if !timer.0.finished() {
+        return;
+    }
+    for (e1, p1) in heads_positions.iter() {
+        for (e2, p2) in food_positions.iter() {
+            if p1 == p2 {
+                eat_events.send(EatEvent {
+                    eater: e1,
+                    eaten: e2,
+                });
+            }
+        }
+    }
+}
+
+fn get_tail(head: Entity, q: &mut Query<(Entity, &mut SnakeSegment)>) -> Entity {
+    let mut tail = head;
+    while let Ok((e, seg)) = q.get_mut(tail) {
+        if let Some(t) = seg.back {
+            tail = t;
+        } else {
+            break;
+        }
+    }
+    tail
+}
+
+fn eat_events_solver(
+    commands: &mut Commands,
+    mut segments: Query<(Entity, &mut SnakeSegment)>,
+    positions: Query<&Position, With<SnakeSegment>>,
+    eat_events: Res<Events<EatEvent>>,
+    mut eat_reader: Local<EventReader<EatEvent>>,
+    materials: Res<Materials>,
+) {
+    while let Some(EatEvent { eater, eaten }) = eat_reader.iter(&eat_events).next() {
+        let tail = get_tail(*eater, &mut segments);
+        let tail_pos = positions.get(tail).unwrap();
+        let new_tail = spawn_segment(commands, materials.body_material.clone(), *tail_pos);
+        commands.with(SnakeSegment {
+            front: Some(tail),
+            back: None,
+        });
+        let (_, mut tail_seg) = segments.get_mut(tail).unwrap();
+        tail_seg.back = Some(new_tail);
+        commands.despawn(*eaten);
+    }
+}
+
 fn main() {
     App::build()
+        .add_resource(WindowDescriptor {
+            title: "Snake!".to_owned(),
+            width: 400.,
+            height: 400.,
+            ..Default::default()
+        })
+        .add_resource(ClearColor(Color::rgb(0.04, 0.04, 0.04)))
         .add_plugins(DefaultPlugins)
         .add_startup_system(setup.system())
         .add_startup_stage(
             "game_setup",
             SystemStage::serial().with_system(game_setup.system()),
         )
+        .add_event::<EatEvent>()
         .add_system(turn_timer.system())
         .add_system(segment_movement.system())
         .add_system(snake_movement.system())
+        .add_system(food_spawner.system())
+        .add_system(collision_solver.system())
+        .add_system(eat_events_solver.system())
         .add_system(position_translation.system())
         .add_system(size_scaling.system())
         .run();
