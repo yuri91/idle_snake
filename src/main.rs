@@ -567,7 +567,7 @@ fn bump_events_solver(
     mut bump_reader: Local<EventReader<BumpEvent>>,
 ) {
     while let Some(BumpEvent { head, wall }) = bump_reader.iter(&bump_events).next() {
-        gamestate.set_next(GameState::Lost).unwrap();
+        gamestate.set_next(GameState::Lost).ok();
         return;
     }
 }
@@ -587,16 +587,19 @@ fn update_hud(player: Res<Player>, mut food_text_q: Query<&mut Text, With<FoodTe
 }
 
 fn main() {
-    App::build()
-        .add_resource(WindowDescriptor {
+    let mut app = App::build();
+    app.add_resource(WindowDescriptor {
             title: "Snake!".to_owned(),
             width: 600.,
             height: 600.,
             vsync: true,
             ..Default::default()
-        })
+        });
+    app.add_plugins(DefaultPlugins);
+    #[cfg(target_arch = "wasm32")]
+    app.add_plugin(bevy_webgl2::WebGL2Plugin);
+    app
         .add_resource(ClearColor(Color::rgb(0.1, 0.1, 0.1)))
-        .add_plugins(DefaultPlugins)
         .add_plugin(FrameTimeDiagnosticsPlugin::default())
         .add_startup_system(setup.system())
         .add_startup_stage(
