@@ -5,8 +5,9 @@ use bevy::app::AppExit;
 use rand::random;
 use std::time::Duration;
 
-const ARENA_WIDTH: u32 = 10;
-const ARENA_HEIGHT: u32 = 10;
+const ARENA_WIDTH: u32 = 15;
+const ARENA_HEIGHT: u32 = 15;
+const ARENA_MARGIN: f32 = 50.;
 
 #[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Hash)]
 struct Position {
@@ -57,6 +58,7 @@ struct Materials {
     head_material: Handle<ColorMaterial>,
     body_material: Handle<ColorMaterial>,
     food_material: Handle<ColorMaterial>,
+    board_material: Handle<ColorMaterial>,
 }
 
 struct Player {
@@ -119,6 +121,12 @@ fn setup(commands: &mut Commands, mut materials: ResMut<Assets<ColorMaterial>>, 
                 texture: None,
             })
             .into(),
+        board_material: materials
+            .add(ColorMaterial {
+                color: Color::rgb(1.0, 1.0, 1.0),
+                texture: None,
+            })
+            .into(),
     });
     commands.spawn(TextBundle {
             style: Style {
@@ -166,6 +174,91 @@ fn setup(commands: &mut Commands, mut materials: ResMut<Assets<ColorMaterial>>, 
             ..Default::default()
         })
         .with(FoodText);
+    commands.spawn(NodeBundle {
+        style: Style {
+            align_self: AlignSelf::FlexEnd,
+            position_type: PositionType::Absolute,
+            position: Rect {
+                top: Val::Px(0.),
+                left: Val::Px(0.),
+                ..Default::default()
+            },
+            size: bevy::prelude::Size {
+                width: Val::Percent(100.),
+                height: Val::Px(ARENA_MARGIN),
+            },
+            ..Default::default()
+        },
+        material: materials.add(ColorMaterial {
+            color: Color::rgb(0., 0., 0.),
+            texture: None,
+        }),
+        ..Default::default()
+    });
+    commands.spawn(NodeBundle {
+        style: Style {
+            align_self: AlignSelf::FlexEnd,
+            position_type: PositionType::Absolute,
+            position: Rect {
+                top: Val::Px(0.),
+                left: Val::Px(0.),
+                ..Default::default()
+            },
+            size: bevy::prelude::Size {
+                width: Val::Px(ARENA_MARGIN),
+                height: Val::Percent(100.),
+            },
+            ..Default::default()
+        },
+        material: materials.add(ColorMaterial {
+            color: Color::rgb(0., 0., 0.),
+            texture: None,
+        }),
+        ..Default::default()
+    });
+    commands.spawn(NodeBundle {
+        style: Style {
+            align_self: AlignSelf::FlexEnd,
+            position_type: PositionType::Absolute,
+            position: Rect {
+                bottom: Val::Px(0.),
+                right: Val::Px(0.),
+                ..Default::default()
+            },
+            size: bevy::prelude::Size {
+                width: Val::Percent(100.),
+                height: Val::Px(ARENA_MARGIN),
+            },
+            ..Default::default()
+        },
+        material: materials.add(ColorMaterial {
+            color: Color::rgb(0., 0., 0.),
+            texture: None,
+        }),
+        ..Default::default()
+    });
+    commands.spawn(NodeBundle {
+        style: Style {
+            align_self: AlignSelf::FlexEnd,
+            position_type: PositionType::Absolute,
+            position: Rect {
+                bottom: Val::Px(0.),
+                right: Val::Px(0.),
+                ..Default::default()
+            },
+            size: bevy::prelude::Size {
+                width: Val::Px(ARENA_MARGIN),
+                height: Val::Percent(100.),
+            },
+            ..Default::default()
+        },
+        material: materials.add(ColorMaterial {
+            color: Color::rgb(0., 0., 0.),
+            texture: None,
+        }),
+        ..Default::default()
+    });
+
 }
 
 fn game_setup(commands: &mut Commands, materials: Res<Materials>) {
@@ -189,15 +282,17 @@ fn size_scaling(windows: Res<Windows>, mut q: Query<(&Size, &mut Sprite)>) {
 
 fn position_translation(windows: Res<Windows>, mut q: Query<(&Position, &mut Transform)>) {
     fn convert(pos: f32, bound_window: f32, bound_game: f32) -> f32 {
-        let tile_size = bound_window / bound_game;
-        pos / bound_game * bound_window - (bound_window / 2.) + (tile_size / 2.)
+        let bound_window_margin = bound_window - 2.*ARENA_MARGIN;
+        let tile_size = bound_window_margin / bound_game;
+        pos / bound_game * bound_window_margin - (bound_window / 2.) + (tile_size / 2.) + ARENA_MARGIN
     }
     let window = windows.get_primary().unwrap();
     for (pos, mut transform) in q.iter_mut() {
+        let z = transform.translation.z;
         transform.translation = Vec3::new(
             convert(pos.x as f32, window.width() as f32, ARENA_WIDTH as f32),
             convert(pos.y as f32, window.height() as f32, ARENA_HEIGHT as f32),
-            0.,
+            z,
         );
     }
 }
@@ -256,6 +351,16 @@ fn snake_movement(
             player_head_pos.y += 1;
         }
     }
+    if player_head_pos.x < 0 {
+        player_head_pos.x = ARENA_WIDTH as i32 - 1;
+    } else if player_head_pos.x >= ARENA_WIDTH as i32 {
+        player_head_pos.x = 0;
+    }
+    if player_head_pos.y < 0 {
+        player_head_pos.y = ARENA_HEIGHT as i32 - 1;
+    } else if player_head_pos.y >= ARENA_HEIGHT as i32 {
+        player_head_pos.y = 0;
+    }
 }
 
 fn segment_movement(mut q: Query<(&mut Position, &SnakeSegment)>) {
@@ -282,6 +387,7 @@ fn spawn_head(
     commands
         .spawn(SpriteBundle {
             material,
+            transform: Transform::from_translation(Vec3::new(0., 0., 1.)),
             ..Default::default()
         })
         .with(position)
@@ -300,6 +406,7 @@ fn spawn_segment(
     commands
         .spawn(SpriteBundle {
             material,
+            transform: Transform::from_translation(Vec3::new(0., 0., 1.)),
             ..Default::default()
         })
         .with(position)
@@ -338,6 +445,7 @@ fn spawn_food(commands: &mut Commands, material: Handle<ColorMaterial>, position
     commands
         .spawn(SpriteBundle {
             material,
+            transform: Transform::from_translation(Vec3::new(0., 0., 1.)),
             ..Default::default()
         })
         .with(Food)
@@ -458,12 +566,12 @@ fn main() {
     App::build()
         .add_resource(WindowDescriptor {
             title: "Snake!".to_owned(),
-            width: 400.,
-            height: 400.,
+            width: 600.,
+            height: 600.,
             vsync: true,
             ..Default::default()
         })
-        .add_resource(ClearColor(Color::rgb(0.04, 0.04, 0.04)))
+        .add_resource(ClearColor(Color::rgb(0.1, 0.1, 0.1)))
         .add_plugins(DefaultPlugins)
         .add_plugin(FrameTimeDiagnosticsPlugin::default())
         .add_startup_system(setup.system())
