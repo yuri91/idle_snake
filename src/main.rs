@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy::core::FixedTimestep;
-use bevy::ecs::ShouldRun;
+use bevy::diagnostic::*;
 use bevy::app::AppExit;
 use rand::random;
 use std::time::Duration;
@@ -62,6 +62,7 @@ struct Materials {
 struct Player {
     snake: Entity,
     direction: Direction,
+    food: u32,
 }
 
 struct Food;
@@ -93,8 +94,12 @@ enum GameState {
     Lost,
 }
 
-fn setup(commands: &mut Commands, mut materials: ResMut<Assets<ColorMaterial>>) {
+struct FpsText;
+struct FoodText;
+
+fn setup(commands: &mut Commands, mut materials: ResMut<Assets<ColorMaterial>>, asset_server: Res<AssetServer>) {
     commands.spawn(Camera2dBundle::default());
+    commands.spawn(CameraUiBundle::default());
     commands.insert_resource(Materials {
         head_material: materials
             .add(ColorMaterial {
@@ -115,6 +120,52 @@ fn setup(commands: &mut Commands, mut materials: ResMut<Assets<ColorMaterial>>) 
             })
             .into(),
     });
+    commands.spawn(TextBundle {
+            style: Style {
+                align_self: AlignSelf::FlexEnd,
+                position_type: PositionType::Absolute,
+                position: Rect {
+                    bottom: Val::Px(10.),
+                    right: Val::Px(10.),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            text: Text {
+                value: "FPS:".to_string(),
+                font: asset_server.load("fonts/DejaVuSans.ttf"),
+                style: TextStyle {
+                    font_size: 20.0,
+                    color: Color::WHITE,
+                    ..Default::default()
+                },
+            },
+            ..Default::default()
+        })
+        .with(FpsText);
+    commands.spawn(TextBundle {
+            style: Style {
+                align_self: AlignSelf::FlexEnd,
+                position_type: PositionType::Absolute,
+                position: Rect {
+                    top: Val::Px(10.),
+                    left: Val::Px(10.),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            text: Text {
+                value: "Food:".to_string(),
+                font: asset_server.load("fonts/DejaVuSans.ttf"),
+                style: TextStyle {
+                    font_size: 20.0,
+                    color: Color::WHITE,
+                    ..Default::default()
+                },
+            },
+            ..Default::default()
+        })
+        .with(FoodText);
 }
 
 fn game_setup(commands: &mut Commands, materials: Res<Materials>) {
@@ -122,6 +173,7 @@ fn game_setup(commands: &mut Commands, materials: Res<Materials>) {
     commands.insert_resource(Player {
         snake,
         direction: Direction::Up,
+        food: 0,
     });
 }
 
@@ -358,6 +410,7 @@ fn eat_events_solver(
     eat_events: Res<Events<EatEvent>>,
     mut eat_reader: Local<EventReader<EatEvent>>,
     materials: Res<Materials>,
+    mut player: ResMut<Player>,
 ) {
     while let Some(EatEvent { eater, eaten }) = eat_reader.iter(&eat_events).next() {
         let tail = get_tail(*eater, &mut segments);
@@ -370,6 +423,9 @@ fn eat_events_solver(
         let (_, mut tail_seg) = segments.get_mut(tail).unwrap();
         tail_seg.back = Some(new_tail);
         commands.despawn(*eaten);
+        if *eater == player.snake {
+            player.food += 1;
+        }
     }
 }
 
@@ -384,6 +440,20 @@ fn bump_events_solver(
     }
 }
 
+fn update_fps(diagnostics: Res<Diagnostics>, mut fps_text_q: Query<&mut Text, With<FpsText>>) {
+
+    if let Some(fps) = diagnostics.get(FrameTimeDiagnosticsPlugin::FPS) {
+        if let Some(average) = fps.average() {
+            let mut text = fps_text_q.iter_mut().next().unwrap();
+            text.value = format!("FPS: {:.2}", average);
+        }
+    }
+}
+fn update_hud(player: Res<Player>, mut food_text_q: Query<&mut Text, With<FoodText>>) {
+    let mut food_text = food_text_q.iter_mut().next().unwrap();
+    food_text.value = format!("Food: {}", player.food);
+}
+
 fn main() {
     App::build()
         .add_resource(WindowDescriptor {
@@ -395,6 +465,7 @@ fn main() {
         })
         .add_resource(ClearColor(Color::rgb(0.04, 0.04, 0.04)))
         .add_plugins(DefaultPlugins)
+        .add_plugin(FrameTimeDiagnosticsPlugin::default())
         .add_startup_system(setup.system())
         .add_startup_stage(
             "game_setup",
@@ -405,6 +476,7 @@ fn main() {
         .add_resource(State::new(GameState::Playing))
         .add_resource(LastInput{direction:Direction::Up})
         .add_system(input_events_sender.system())
+        .add_system(update_fps.system())
         .add_stage_after(stage::UPDATE, "game_states", StateStage::<GameState>::default()
             .with_update_stage(GameState::Playing, SystemStage::parallel()
                 .with_run_criteria(FixedTimestep::step(0.15))
@@ -414,6 +486,7 @@ fn main() {
                 .with_system(collision_solver.system())
                 .with_system(eat_events_solver.system())
                 .with_system(bump_events_solver.system())
+                .with_system(update_hud.system())
             )
         )
         .add_system(position_translation.system())
