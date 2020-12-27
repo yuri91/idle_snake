@@ -79,6 +79,13 @@ impl Default for FoodSpawnTimer {
     }
 }
 
+struct PauseTimer(Timer);
+impl Default for PauseTimer {
+    fn default() -> Self {
+        Self(Timer::new(Duration::from_millis(500), false))
+    }
+}
+
 struct EatEvent {
     eater: Entity,
     eaten: Entity,
@@ -305,15 +312,21 @@ fn input_events_sender(
     mut last_input: ResMut<LastInput>,
     mut app_exit_events: ResMut<Events<AppExit>>,
     mut gamestate: ResMut<State<GameState>>,
+    time: Res<Time>,
+    mut pause_timer: Local<PauseTimer>,
 ) {
     if keys.pressed(KeyCode::Escape) {
         app_exit_events.send(AppExit);
     }
-    if keys.pressed(KeyCode::Space) {
-        if *gamestate.current() == GameState::Paused {
-            gamestate.set_next(GameState::Playing).unwrap();
-        } else if *gamestate.current() == GameState::Playing {
-            gamestate.set_next(GameState::Paused).unwrap();
+    pause_timer.0.tick(time.delta_seconds());
+    if pause_timer.0.finished() {
+        if keys.pressed(KeyCode::Space) {
+            if *gamestate.current() == GameState::Paused {
+                gamestate.set_next(GameState::Playing).unwrap();
+            } else if *gamestate.current() == GameState::Playing {
+                gamestate.set_next(GameState::Paused).unwrap();
+            }
+            pause_timer.0.reset();
         }
     }
     let direction = if keys.pressed(KeyCode::Left) {
