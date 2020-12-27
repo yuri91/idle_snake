@@ -1,4 +1,7 @@
 use bevy::prelude::*;
+use bevy::core::FixedTimestep;
+use bevy::ecs::ShouldRun;
+use bevy::app::AppExit;
 use rand::random;
 use std::time::Duration;
 
@@ -25,7 +28,7 @@ impl Size {
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum Direction {
     Left,
     Up,
@@ -61,8 +64,6 @@ struct Player {
     direction: Direction,
 }
 
-struct TurnTimer(Timer);
-
 struct Food;
 
 struct FoodSpawnTimer(Timer);
@@ -75,6 +76,21 @@ impl Default for FoodSpawnTimer {
 struct EatEvent {
     eater: Entity,
     eaten: Entity,
+}
+struct BumpEvent {
+    head: Entity,
+    wall: Entity,
+}
+
+struct LastInput {
+    direction: Direction,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GameState {
+    Playing,
+    Paused,
+    Lost,
 }
 
 fn setup(commands: &mut Commands, mut materials: ResMut<Assets<ColorMaterial>>) {
@@ -99,7 +115,6 @@ fn setup(commands: &mut Commands, mut materials: ResMut<Assets<ColorMaterial>>) 
             })
             .into(),
     });
-    commands.insert_resource(TurnTimer(Timer::new(Duration::from_millis(150), true)));
 }
 
 fn game_setup(commands: &mut Commands, materials: Res<Materials>) {
@@ -135,13 +150,23 @@ fn position_translation(windows: Res<Windows>, mut q: Query<(&Position, &mut Tra
     }
 }
 
-fn snake_movement(
-    timer: Res<TurnTimer>,
+fn input_events_sender(
     keys: Res<Input<KeyCode>>,
-    mut player: ResMut<Player>,
-    mut head_positions: Query<&mut Position, With<SnakeHead>>,
+    mut last_input: ResMut<LastInput>,
+    mut app_exit_events: ResMut<Events<AppExit>>,
+    mut gamestate: ResMut<State<GameState>>,
 ) {
-    let dir = if keys.pressed(KeyCode::Left) {
+    if keys.pressed(KeyCode::Escape) {
+        app_exit_events.send(AppExit);
+    }
+    if keys.pressed(KeyCode::Space) {
+        if *gamestate.current() == GameState::Paused {
+            gamestate.set_next(GameState::Playing).unwrap();
+        } else if *gamestate.current() == GameState::Playing {
+            gamestate.set_next(GameState::Paused).unwrap();
+        }
+    }
+    let direction = if keys.pressed(KeyCode::Left) {
         Direction::Left
     } else if keys.pressed(KeyCode::Right) {
         Direction::Right
@@ -150,15 +175,18 @@ fn snake_movement(
     } else if keys.pressed(KeyCode::Up) {
         Direction::Up
     } else {
-        player.direction
-    };
-
-    if dir != player.direction.opposite() {
-        player.direction = dir;
-    }
-
-    if !timer.0.finished() {
         return;
+    };
+    last_input.direction = direction;
+}
+
+fn snake_movement(
+    last_input: Res<LastInput>,
+    mut player: ResMut<Player>,
+    mut head_positions: Query<&mut Position, With<SnakeHead>>,
+) {
+    if last_input.direction != player.direction.opposite() {
+        player.direction = last_input.direction;
     }
 
     let mut player_head_pos = head_positions.get_mut(player.snake).unwrap();
@@ -178,11 +206,7 @@ fn snake_movement(
     }
 }
 
-fn segment_movement(timer: Res<TurnTimer>, mut q: Query<(&mut Position, &SnakeSegment)>) {
-    if !timer.0.finished() {
-        return;
-    }
-
+fn segment_movement(mut q: Query<(&mut Position, &SnakeSegment)>) {
     let heads: Vec<_> = q
         .iter_mut()
         .filter(|(_, s)| s.front.is_none())
@@ -196,10 +220,6 @@ fn segment_movement(timer: Res<TurnTimer>, mut q: Query<(&mut Position, &SnakeSe
             e = q.get_component::<SnakeSegment>(es).unwrap().back;
         }
     }
-}
-
-fn turn_timer(time: Res<Time>, mut timer: ResMut<TurnTimer>) {
-    timer.0.tick(time.delta_seconds());
 }
 
 fn spawn_head(
@@ -279,7 +299,7 @@ fn food_spawner(
     time: Res<Time>,
     mut timer: Local<FoodSpawnTimer>,
 ) {
-    timer.0.tick(time.delta_seconds());
+    timer.0.tick(time.delta_seconds()+0.15);
     if !timer.0.finished() {
         return;
     }
@@ -291,14 +311,12 @@ fn food_spawner(
 }
 
 fn collision_solver(
-    timer: Res<TurnTimer>,
     heads_positions: Query<(Entity, &Position), With<SnakeHead>>,
+    body_positions: Query<(Entity, &Position), (With<Snake>, Without<SnakeHead>)>,
     food_positions: Query<(Entity, &Position), With<Food>>,
     mut eat_events: ResMut<Events<EatEvent>>,
+    mut bump_events: ResMut<Events<BumpEvent>>,
 ) {
-    if !timer.0.finished() {
-        return;
-    }
     for (e1, p1) in heads_positions.iter() {
         for (e2, p2) in food_positions.iter() {
             if p1 == p2 {
@@ -309,11 +327,21 @@ fn collision_solver(
             }
         }
     }
+    for (e1, p1) in heads_positions.iter() {
+        for (e2, p2) in body_positions.iter() {
+            if p1 == p2 {
+                bump_events.send(BumpEvent {
+                    head: e1,
+                    wall: e2,
+                });
+            }
+        }
+    }
 }
 
 fn get_tail(head: Entity, q: &mut Query<(Entity, &mut SnakeSegment)>) -> Entity {
     let mut tail = head;
-    while let Ok((e, seg)) = q.get_mut(tail) {
+    while let Ok((_, seg)) = q.get_mut(tail) {
         if let Some(t) = seg.back {
             tail = t;
         } else {
@@ -345,12 +373,24 @@ fn eat_events_solver(
     }
 }
 
+fn bump_events_solver(
+    mut gamestate: ResMut<State<GameState>>,
+    bump_events: Res<Events<BumpEvent>>,
+    mut bump_reader: Local<EventReader<BumpEvent>>,
+) {
+    while let Some(BumpEvent { head, wall }) = bump_reader.iter(&bump_events).next() {
+        gamestate.set_next(GameState::Lost).unwrap();
+        return;
+    }
+}
+
 fn main() {
     App::build()
         .add_resource(WindowDescriptor {
             title: "Snake!".to_owned(),
             width: 400.,
             height: 400.,
+            vsync: true,
             ..Default::default()
         })
         .add_resource(ClearColor(Color::rgb(0.04, 0.04, 0.04)))
@@ -361,12 +401,21 @@ fn main() {
             SystemStage::serial().with_system(game_setup.system()),
         )
         .add_event::<EatEvent>()
-        .add_system(turn_timer.system())
-        .add_system(segment_movement.system())
-        .add_system(snake_movement.system())
-        .add_system(food_spawner.system())
-        .add_system(collision_solver.system())
-        .add_system(eat_events_solver.system())
+        .add_event::<BumpEvent>()
+        .add_resource(State::new(GameState::Playing))
+        .add_resource(LastInput{direction:Direction::Up})
+        .add_system(input_events_sender.system())
+        .add_stage_after(stage::UPDATE, "game_states", StateStage::<GameState>::default()
+            .with_update_stage(GameState::Playing, SystemStage::parallel()
+                .with_run_criteria(FixedTimestep::step(0.15))
+                .with_system(food_spawner.system())
+                .with_system(segment_movement.system())
+                .with_system(snake_movement.system())
+                .with_system(collision_solver.system())
+                .with_system(eat_events_solver.system())
+                .with_system(bump_events_solver.system())
+            )
+        )
         .add_system(position_translation.system())
         .add_system(size_scaling.system())
         .run();
