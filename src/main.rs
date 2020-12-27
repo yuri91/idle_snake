@@ -2,12 +2,15 @@ use bevy::prelude::*;
 use bevy::core::FixedTimestep;
 use bevy::diagnostic::*;
 use bevy::app::AppExit;
-use rand::random;
+use rand::seq::IteratorRandom;
 use std::time::Duration;
+use std::collections::HashSet;
 
 const ARENA_WIDTH: u32 = 15;
 const ARENA_HEIGHT: u32 = 15;
 const ARENA_MARGIN: f32 = 50.;
+
+const FIXED_TIMESTEP: f64 = 0.15;
 
 #[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Hash)]
 struct Position {
@@ -455,19 +458,27 @@ fn spawn_food(commands: &mut Commands, material: Handle<ColorMaterial>, position
 
 fn food_spawner(
     commands: &mut Commands,
+    occupied: Query<&Position>,
     materials: Res<Materials>,
     time: Res<Time>,
     mut timer: Local<FoodSpawnTimer>,
 ) {
-    timer.0.tick(time.delta_seconds()+0.15);
+    timer.0.tick(time.delta_seconds()+ FIXED_TIMESTEP as f32);
     if !timer.0.finished() {
         return;
     }
-    let pos = Position {
-        x: (random::<f32>() * ARENA_WIDTH as f32) as i32,
-        y: (random::<f32>() * ARENA_HEIGHT as f32) as i32,
-    };
-    spawn_food(commands, materials.food_material.clone(), pos);
+    let mut grid = std::collections::HashSet::new();
+    for x in 0..ARENA_WIDTH as i32 {
+        for y in 0..ARENA_HEIGHT as i32 {
+            grid.insert(Position{x,y});
+        }
+    }
+    let occupied: HashSet<Position> = occupied.iter().cloned().collect();
+    let free = grid.difference(&occupied);
+    let pos = free.into_iter().choose(&mut rand::thread_rng());
+    if let Some(pos) = pos {
+        spawn_food(commands, materials.food_material.clone(), *pos);
+    }
 }
 
 fn collision_solver(
@@ -587,7 +598,7 @@ fn main() {
         .add_system(update_fps.system())
         .add_stage_after(stage::UPDATE, "game_states", StateStage::<GameState>::default()
             .with_update_stage(GameState::Playing, SystemStage::parallel()
-                .with_run_criteria(FixedTimestep::step(0.15))
+                .with_run_criteria(FixedTimestep::step(FIXED_TIMESTEP))
                 .with_system(food_spawner.system())
                 .with_system(segment_movement.system())
                 .with_system(snake_movement.system())
