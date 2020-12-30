@@ -608,7 +608,7 @@ fn main() {
         )
         .add_event::<EatEvent>()
         .add_event::<BumpEvent>()
-        .add_resource(State::new(GameState::Playing))
+        .add_resource(State::new(GameState::Paused))
         .add_resource(LastInput{direction:Direction::Up})
         .add_system(input_events_sender.system())
         .add_system(update_fps.system())
